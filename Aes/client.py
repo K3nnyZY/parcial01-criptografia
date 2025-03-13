@@ -15,7 +15,7 @@ def load_main_key(file_path):
     print("[CLIENTE] MAIN_KEY cargada:", main_key.hex())
     return main_key
 
-HOST = '127.0.0.1'
+HOST = '10.20.56.176'
 PORT = 6000
 
 

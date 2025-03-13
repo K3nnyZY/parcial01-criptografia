@@ -18,7 +18,7 @@ def get_key_file_path():
     """Devuelve la ruta absoluta del archivo de la MAIN_KEY."""
     return os.path.abspath(KEY_FILE_PATH)
 
-HOST = '127.0.0.1'
+HOST = '10.20.56.176'
 PORT = 6000
 
 

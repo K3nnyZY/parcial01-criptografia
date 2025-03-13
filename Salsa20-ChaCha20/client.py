@@ -3,8 +3,8 @@ import sys
 import os
 from Crypto.Cipher import Salsa20, ChaCha20
 
-HOST = '127.0.0.1'
-PORT = 5000
+HOST = '10.20.56.176'
+PORT = 6000
 
 def recv_exact(sock, num_bytes):
     data = b''
