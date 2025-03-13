@@ -1,19 +1,19 @@
 import socket
 import sys
+import os
 from Crypto.Cipher import AES
 
-HOST = '127.0.0.1'
-PORT = 6000
-
-# Se asume que el cliente también conoce MAIN_KEY (offline).
+###############################################################################
+# Se asume que el Cliente conoce la MAIN_KEY por un canal alterno.
+###############################################################################
 MAIN_KEY = b'\x01\x02\x03\x04\x05\x06\x07\x08' \
            b'\x09\x0A\x0B\x0C\x0D\x0E\x0F\x10' \
            b'\x11\x12\x13\x14\x15\x16\x17\x18' \
            b'\x19\x1A\x1B\x1C\x1D\x1E\x1F\x20'
 
-###############################################################################
-# Helper para mensajes (igual que en server)
-###############################################################################
+HOST = '127.0.0.1'
+PORT = 6000
+
 def recv_exact(sock, num_bytes):
     data = b''
     while len(data) < num_bytes:
@@ -37,134 +37,137 @@ def send_message(sock, data):
     sock.sendall(msg_len.to_bytes(4, 'big'))
     sock.sendall(data)
 
-###############################################################################
-# Mismo cifrado y utilidades (copiadas del server)
-###############################################################################
-def aes_cbc_decrypt(iv_ciphertext, key):
-    iv = iv_ciphertext[:16]
-    ciphertext = iv_ciphertext[16:]
-    cipher = AES.new(key, AES.MODE_CBC, iv)
-    data_padded = cipher.decrypt(ciphertext)
-    pad_len = data_padded[-1]
-    return data_padded[:-pad_len]
-
 def pkcs7_pad(data, block_size=16):
     pad_len = block_size - (len(data) % block_size)
     return data + bytes([pad_len]) * pad_len
 
-def pkcs7_unpad(data, block_size=16):
+def pkcs7_unpad(data):
     pad_len = data[-1]
     return data[:-pad_len]
+
+def aes_cbc_decrypt(data, key):
+    iv = data[:16]
+    ciphertext = data[16:]
+    cipher = AES.new(key, AES.MODE_CBC, iv)
+    dec_padded = cipher.decrypt(ciphertext)
+    return pkcs7_unpad(dec_padded)
+
+###############################################################################
+# Parsear las subkeys recibidas en binario
+###############################################################################
+def parse_subkeys(blob):
+    """
+    Formato: kname||size(2 bytes)||kval || kname2||size2||kval2 ...
+    """
+    parts = blob.split(b"||")
+    # Ejemplo: [b'k1', b'\x00 ', b'k2', b'\x00 ', b''] ...
+    subkeys = {}
+    i = 0
+    while i < len(parts) - 1:  # El último suele ser b''
+        kname = parts[i].decode()
+        size_bytes = parts[i+1][:2]
+        ksize = int.from_bytes(size_bytes, 'big')
+        keydata = parts[i+1][2:2+ksize]
+        subkeys[kname] = keydata
+        i += 2
+    return subkeys
+
+###############################################################################
+# CIFRADO POSTERIOR: Modo + Técnica
+###############################################################################
+from Crypto.Cipher import AES
 
 def xor_bytes(a, b):
     return bytes(x ^ y for x, y in zip(a, b))
 
-###############################################################################
-# Mismo apply_technique, block_mode, generate_subkeys, etc. no se repite aquí
-# => IMPORTANTE: Para la demo, simplemente replicamos la parte que necesitamos
-#    en el CLIENTE para cifrar/descifrar mensajes POSTERIORES al handshake.
-#    (Podríamos mover todo a un "common.py" si quisiéramos.)
-###############################################################################
+def ecb_encrypt(data, key):
+    cipher = AES.new(key, AES.MODE_ECB)
+    return cipher.encrypt(pkcs7_pad(data))
 
-def apply_technique_encrypt(plaintext, subkeys, technique):
-    from Crypto.Cipher import AES
-    def pkcs7_pad(d, bs=16):
-        pl = bs - (len(d) % bs)
-        return d + bytes([pl])*pl
+def ecb_decrypt(data, key):
+    cipher = AES.new(key, AES.MODE_ECB)
+    dec = cipher.decrypt(data)
+    return pkcs7_unpad(dec)
 
+def technique_encrypt(plaintext, subkeys, technique):
     if technique == "none":
-        return AES.new(subkeys["k1"], AES.MODE_ECB).encrypt(pkcs7_pad(plaintext))
+        return ecb_encrypt(plaintext, subkeys["k1"])
     elif technique == "double":
-        tmp = AES.new(subkeys["k1"], AES.MODE_ECB).encrypt(pkcs7_pad(plaintext))
-        return AES.new(subkeys["k2"], AES.MODE_ECB).encrypt(tmp)
+        tmp = ecb_encrypt(plaintext, subkeys["k1"])
+        return ecb_encrypt(tmp, subkeys["k2"])
     elif technique == "triple":
-        tmp1 = AES.new(subkeys["k1"], AES.MODE_ECB).encrypt(pkcs7_pad(plaintext))
-        tmp2 = AES.new(subkeys["k2"], AES.MODE_ECB).encrypt(tmp1)
-        return AES.new(subkeys["k3"], AES.MODE_ECB).encrypt(tmp2)
+        tmp1 = ecb_encrypt(plaintext, subkeys["k1"])
+        tmp2 = ecb_encrypt(tmp1, subkeys["k2"])
+        return ecb_encrypt(tmp2, subkeys["k3"])
     elif technique == "whitening":
         block = xor_bytes(plaintext, subkeys["w1"])
-        block_enc = AES.new(subkeys["k2"], AES.MODE_ECB).encrypt(pkcs7_pad(block))
-        final = xor_bytes(block_enc, subkeys["w3"])
-        return final
+        enc_block = ecb_encrypt(block, subkeys["k2"])
+        return xor_bytes(enc_block, subkeys["w3"])
     else:
         raise ValueError("Técnica desconocida")
 
-def apply_technique_decrypt(ciphertext, subkeys, technique):
-    from Crypto.Cipher import AES
-    def pkcs7_unpad(d, bs=16):
-        pl = d[-1]
-        return d[:-pl]
-
+def technique_decrypt(ciphertext, subkeys, technique):
     if technique == "none":
-        tmp = AES.new(subkeys["k1"], AES.MODE_ECB).decrypt(ciphertext)
-        return pkcs7_unpad(tmp)
+        return ecb_decrypt(ciphertext, subkeys["k1"])
     elif technique == "double":
-        tmp = AES.new(subkeys["k2"], AES.MODE_ECB).decrypt(ciphertext)
-        tmp2 = AES.new(subkeys["k1"], AES.MODE_ECB).decrypt(tmp)
-        return pkcs7_unpad(tmp2)
+        tmp = ecb_decrypt(ciphertext, subkeys["k2"])
+        return ecb_decrypt(tmp, subkeys["k1"])
     elif technique == "triple":
-        tmp1 = AES.new(subkeys["k3"], AES.MODE_ECB).decrypt(ciphertext)
-        tmp2 = AES.new(subkeys["k2"], AES.MODE_ECB).decrypt(tmp1)
-        tmp3 = AES.new(subkeys["k1"], AES.MODE_ECB).decrypt(tmp2)
-        return pkcs7_unpad(tmp3)
+        tmp1 = ecb_decrypt(ciphertext, subkeys["k3"])
+        tmp2 = ecb_decrypt(tmp1, subkeys["k2"])
+        return ecb_decrypt(tmp2, subkeys["k1"])
     elif technique == "whitening":
         block_enc = xor_bytes(ciphertext, subkeys["w3"])
-        block_dec_padded = AES.new(subkeys["k2"], AES.MODE_ECB).decrypt(block_enc)
-        block_dec = pkcs7_unpad(block_dec_padded)
-        return xor_bytes(block_dec, subkeys["w1"])
+        dec_block_padded = AES.new(subkeys["k2"], AES.MODE_ECB).decrypt(block_enc)
+        dec_block = pkcs7_unpad(dec_block_padded)
+        return xor_bytes(dec_block, subkeys["w1"])
     else:
         raise ValueError("Técnica desconocida")
 
-
-def block_mode_encrypt(plaintext, mode, subkeys, technique):
-    from Crypto.Cipher import AES
+def mode_encrypt(plaintext, mode, subkeys, technique):
+    # Primero aplica la técnica
+    tech_out = technique_encrypt(plaintext, subkeys, technique)
     if mode == "ECB":
-        return apply_technique_encrypt(plaintext, subkeys, technique)
+        return tech_out
     elif mode == "CBC":
         iv = os.urandom(16)
-        block_tech = apply_technique_encrypt(plaintext, subkeys, technique)
         cipher = AES.new(subkeys["k1"], AES.MODE_CBC, iv)
-        cbc_out = cipher.encrypt(pkcs7_pad(block_tech))
-        return iv + cbc_out
+        return iv + cipher.encrypt(pkcs7_pad(tech_out))
     elif mode == "CTR":
         nonce = os.urandom(8)
-        block_tech = apply_technique_encrypt(plaintext, subkeys, technique)
         cipher = AES.new(subkeys["k1"], AES.MODE_CTR, nonce=nonce)
-        ctr_out = cipher.encrypt(block_tech)
-        return nonce + ctr_out
+        return nonce + cipher.encrypt(tech_out)
     else:
         raise ValueError("Modo no soportado")
 
-def block_mode_decrypt(ciphertext, mode, subkeys, technique):
-    from Crypto.Cipher import AES
+def mode_decrypt(ciphertext, mode, subkeys, technique):
     if mode == "ECB":
-        return apply_technique_decrypt(ciphertext, subkeys, technique)
+        return technique_decrypt(ciphertext, subkeys, technique)
     elif mode == "CBC":
         iv = ciphertext[:16]
-        cbc_out = ciphertext[16:]
+        cbc_data = ciphertext[16:]
         cipher = AES.new(subkeys["k1"], AES.MODE_CBC, iv)
-        block_tech_padded = cipher.decrypt(cbc_out)
-        block_tech = pkcs7_unpad(block_tech_padded)
-        return apply_technique_decrypt(block_tech, subkeys, technique)
+        dec_tech_padded = cipher.decrypt(cbc_data)
+        dec_tech = pkcs7_unpad(dec_tech_padded)
+        return technique_decrypt(dec_tech, subkeys, technique)
     elif mode == "CTR":
         nonce = ciphertext[:8]
-        ctr_out = ciphertext[8:]
+        ctr_data = ciphertext[8:]
         cipher = AES.new(subkeys["k1"], AES.MODE_CTR, nonce=nonce)
-        block_tech = cipher.decrypt(ctr_out)
-        return apply_technique_decrypt(block_tech, subkeys, technique)
+        dec_tech = cipher.decrypt(ctr_data)
+        return technique_decrypt(dec_tech, subkeys, technique)
     else:
         raise ValueError("Modo no soportado")
 
 ###############################################################################
-# CLIENT
+# CLIENTE
 ###############################################################################
-
 def main():
     if len(sys.argv) < 3:
-        print(f"Uso: python client.py <MODE> <TECHNIQUE>")
-        print("MODE: ECB, CBC, CTR")
-        print("TECHNIQUE: none, double, triple, whitening")
-        sys.exit(1)
+        print("Uso: python client.py <MODE> <TECHNIQUE>")
+        print("  <MODE>: ECB, CBC, CTR")
+        print("  <TECHNIQUE>: none, double, triple, whitening")
+        return
 
     mode = sys.argv[1]
     technique = sys.argv[2]
@@ -173,74 +176,49 @@ def main():
     client_socket.connect((HOST, PORT))
     print(f"[CLIENTE] Conectado a {HOST}:{PORT}")
 
-    # 1. Enviar modo y técnica al servidor
+    # (3) Enviar modo y técnica en claro
     send_message(client_socket, mode.encode())
     send_message(client_socket, technique.encode())
 
-    # 2. Recibir las subllaves (cifradas con AES-CBC y MAIN_KEY)
+    # (4) Recibir sub-llaves cifradas (AES CBC con MAIN_KEY)
     enc_subkeys = recv_message(client_socket)
     if not enc_subkeys:
-        print("[CLIENTE] No llegaron subllaves. Saliendo.")
+        print("[CLIENTE] No llegó subkeys. Saliendo.")
         client_socket.close()
         return
 
-    # 3. Descifrar subllaves
-    from Crypto.Cipher import AES
-    def aes_cbc_decrypt(iv_ciphertext, key):
-        iv = iv_ciphertext[:16]
-        ciphertext = iv_ciphertext[16:]
-        cipher = AES.new(key, AES.MODE_CBC, iv)
-        data_padded = cipher.decrypt(ciphertext)
-        pad_len = data_padded[-1]
-        return data_padded[:-pad_len]
-
+    # Descifrar subllaves con la MAIN_KEY
     subkeys_blob = aes_cbc_decrypt(enc_subkeys, MAIN_KEY)
+    # Parsear subkeys
+    subkeys = parse_subkeys(subkeys_blob)
+    print("[CLIENTE] Subkeys recibidas:", {k: v.hex() for k, v in subkeys.items()})
 
-    # 4. Parsear subkeys
-    # subkeys_blob = kname||size||kval || kname2||size2||kval2 ...
-    # terminamos cada "campo" con "||" => haremos un split
-    parts = subkeys_blob.split(b"||")
-    # Ejemplo: [b'k1', b'\x00\x20<KEY>', b'k2', b'\x00\x20<KEY>', b'']
-    # Lo parseamos en pares: (kname, size, keydata)
-    subkeys = {}
-    i = 0
-    while i < len(parts) - 1:  # último elemento es '' por el split final
-        kname = parts[i].decode()
-        size_bytes = parts[i+1][:2]
-        kval_size = int.from_bytes(size_bytes, 'big')
-        kval = parts[i+1][2:2+kval_size]
-        subkeys[kname] = kval
-        i += 2
-
-    print("[CLIENTE] Subllaves recibidas:", {k: v.hex() for k, v in subkeys.items()})
-
-    # 5. Intercambio de mensajes POSTERIORES
+    # (5) Toda la comunicación posterior con la combinación (mode + technique)
     while True:
-        msg = input("[CLIENTE] Escribe un mensaje (o 'exit'): ")
+        msg = input("[CLIENTE] Escribe mensaje (o 'exit'): ")
         if msg.lower() == "exit":
+            # Enviamos mensaje vacío para indicar cierre
             send_message(client_socket, b'')
             break
 
-        # Cifrar con la combinación (mode, technique, subkeys)
-        ciphertext = block_mode_encrypt(msg.encode(), mode, subkeys, technique)
-
-        # Enviarlo
+        # Cifrar
+        ciphertext = mode_encrypt(msg.encode(), mode, subkeys, technique)
         send_message(client_socket, ciphertext)
 
         # Recibir respuesta
-        encrypted_resp = recv_message(client_socket)
-        if not encrypted_resp:
-            print("[CLIENTE] Servidor cerró la conexión.")
+        enc_resp = recv_message(client_socket)
+        if not enc_resp:
+            print("[CLIENTE] Servidor cerró conexión.")
             break
 
-        resp_plain = block_mode_decrypt(encrypted_resp, mode, subkeys, technique)
+        dec_resp = mode_decrypt(enc_resp, mode, subkeys, technique)
         try:
-            print("[CLIENTE] Respuesta:", resp_plain.decode())
+            print("[CLIENTE] Respuesta:", dec_resp.decode())
         except:
-            print("[CLIENTE] Respuesta (binario):", resp_plain)
+            print("[CLIENTE] Respuesta (binario):", dec_resp)
 
     client_socket.close()
-    print("[CLIENTE] Conexión finalizada.")
+    print("[CLIENTE] Finalizado.")
 
 if __name__ == "__main__":
     main()
