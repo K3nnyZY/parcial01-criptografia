@@ -78,6 +78,10 @@ def main():
 
         # Enviar nonce + ciphertext
         send_message(client_socket, nonce_client + ciphertext_client)
+        print("*" * 30)
+        print("Mensaje enviado:")
+        print((nonce_client + ciphertext_client).hex())
+        print("*" * 30)
 
         # Recibir la respuesta del servidor
         encrypted_response = recv_message(client_socket)

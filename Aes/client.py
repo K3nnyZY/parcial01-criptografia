@@ -3,9 +3,9 @@ import sys
 import os
 from Crypto.Cipher import AES
 
-###############################################################################
+
 # Se asume que el Cliente conoce la MAIN_KEY por un canal alterno.
-###############################################################################
+
 MAIN_KEY = b'\x01\x02\x03\x04\x05\x06\x07\x08' \
            b'\x09\x0A\x0B\x0C\x0D\x0E\x0F\x10' \
            b'\x11\x12\x13\x14\x15\x16\x17\x18' \
@@ -13,6 +13,9 @@ MAIN_KEY = b'\x01\x02\x03\x04\x05\x06\x07\x08' \
 
 HOST = '127.0.0.1'
 PORT = 6000
+
+
+# Funciones auxiliares para manejo de mensajes
 
 def recv_exact(sock, num_bytes):
     data = b''
@@ -37,6 +40,9 @@ def send_message(sock, data):
     sock.sendall(msg_len.to_bytes(4, 'big'))
     sock.sendall(data)
 
+
+# Funciones de cifrado y descifrado
+
 def pkcs7_pad(data, block_size=16):
     pad_len = block_size - (len(data) % block_size)
     return data + bytes([pad_len]) * pad_len
@@ -52,30 +58,37 @@ def aes_cbc_decrypt(data, key):
     dec_padded = cipher.decrypt(ciphertext)
     return pkcs7_unpad(dec_padded)
 
-###############################################################################
-# Parsear las subkeys recibidas en binario
-###############################################################################
+
+# Parsear las sub-llaves recibidas en binario
 def parse_subkeys(blob):
     """
-    Formato: kname||size(2 bytes)||kval || kname2||size2||kval2 ...
+    Convierte el bloque binario de subkeys en un diccionario.
+    Formato: kname||size(2 bytes)||keydata || kname2||size2||keydata2 ...
     """
-    parts = blob.split(b"||")
-    # Ejemplo: [b'k1', b'\x00 ', b'k2', b'\x00 ', b''] ...
     subkeys = {}
     i = 0
-    while i < len(parts) - 1:  # El último suele ser b''
-        kname = parts[i].decode()
-        size_bytes = parts[i+1][:2]
-        ksize = int.from_bytes(size_bytes, 'big')
-        keydata = parts[i+1][2:2+ksize]
+    while i < len(blob):
+        # Buscar el delimitador '||'
+        delim_index = blob.find(b"||", i)
+        if delim_index == -1:
+            break  # No más claves
+
+        kname = blob[i:delim_index].decode()
+        i = delim_index + 2  # Avanzar después de "||"
+
+        # Extraer tamaño (2 bytes)
+        size = int.from_bytes(blob[i:i+2], 'big')
+        i += 2  # Avanzar después del tamaño
+
+        # Extraer clave
+        keydata = blob[i:i+size]
+        i += size + 2  # Avanzar después de keydata y "||"
+
         subkeys[kname] = keydata
-        i += 2
+
     return subkeys
 
-###############################################################################
-# CIFRADO POSTERIOR: Modo + Técnica
-###############################################################################
-from Crypto.Cipher import AES
+# Cifrado y descifrado según el modo y la técnica
 
 def xor_bytes(a, b):
     return bytes(x ^ y for x, y in zip(a, b))
@@ -159,9 +172,7 @@ def mode_decrypt(ciphertext, mode, subkeys, technique):
     else:
         raise ValueError("Modo no soportado")
 
-###############################################################################
 # CLIENTE
-###############################################################################
 def main():
     if len(sys.argv) < 3:
         print("Uso: python client.py <MODE> <TECHNIQUE>")

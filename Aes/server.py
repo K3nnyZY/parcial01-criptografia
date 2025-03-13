@@ -2,10 +2,10 @@ import socket
 import os
 from Crypto.Cipher import AES
 
-###############################################################################
+
 # 1) LLAVE PRINCIPAL DE 256 BITS (AES-256)
 #    Se asume compartida con el Cliente por un canal alterno (USB, email, etc.)
-###############################################################################
+
 MAIN_KEY = b'\x01\x02\x03\x04\x05\x06\x07\x08' \
            b'\x09\x0A\x0B\x0C\x0D\x0E\x0F\x10' \
            b'\x11\x12\x13\x14\x15\x16\x17\x18' \
@@ -14,9 +14,9 @@ MAIN_KEY = b'\x01\x02\x03\x04\x05\x06\x07\x08' \
 HOST = '127.0.0.1'
 PORT = 6000
 
-###############################################################################
+
 # 2) MANEJO DE MENSAJES: Envío y recepción (longitud + datos)
-###############################################################################
+
 def recv_exact(sock, num_bytes):
     data = b''
     while len(data) < num_bytes:
@@ -40,9 +40,9 @@ def send_message(sock, data):
     sock.sendall(msg_len.to_bytes(4, 'big'))
     sock.sendall(data)
 
-###############################################################################
+
 # 3) UTILIDADES DE CIFRADO: AES CBC (para proteger las sub-llaves)
-###############################################################################
+
 def pkcs7_pad(data, block_size=16):
     pad_len = block_size - (len(data) % block_size)
     return data + bytes([pad_len]) * pad_len
@@ -64,17 +64,9 @@ def aes_cbc_decrypt(data, key):
     dec_padded = cipher.decrypt(ciphertext)
     return pkcs7_unpad(dec_padded)
 
-###############################################################################
-# 4) GENERAR SUB-LLAVES PARA LA TÉCNICA (none, double, triple, whitening)
-###############################################################################
+
+# 4) GENERAR SUB-LLAVES PARA LA TÉCNICA: Retorna un diccionario con las llaves/valores necesarios
 def generate_subkeys(technique):
-    """
-    Retorna un diccionario con las llaves/valores necesarios:
-      - none -> {'k1': 32 bytes}
-      - double -> {'k1': 32 bytes, 'k2': 32 bytes}
-      - triple -> {'k1': 32 bytes, 'k2': 32 bytes, 'k3': 32 bytes}
-      - whitening -> {'w1': 16 bytes, 'k2': 32 bytes, 'w3': 16 bytes}
-    """
     if technique == "none":
         return {"k1": os.urandom(32)}
     elif technique == "double":
@@ -99,51 +91,53 @@ def pack_subkeys(subkeys):
         blob += kname.encode() + b"||" + size_bytes + kval + b"||"
     return blob
 
-###############################################################################
 # 5) CIFRADO DE MENSAJES POSTERIORES: MODO (ECB, CBC, CTR) + TÉCNICA
-#    En una implementación "real", lo harías bloque a bloque, pero aquí
-#    haremos una demo "envolviendo" el mensaje completo para simplificar.
-###############################################################################
-from Crypto.Cipher import AES
-
 def xor_bytes(a, b):
     return bytes(x ^ y for x, y in zip(a, b))
 
-def technique_encrypt(plaintext, subkeys, technique):
-    """
-    Aplica 'none', 'double', 'triple', 'whitening' a un plaintext.
-    Usamos AES-256 en ECB internamente (salvo la whitening).
-    """
-    def ecb_encrypt(data, key):
-        cipher = AES.new(key, AES.MODE_ECB)
-        return cipher.encrypt(pkcs7_pad(data))
+def ecb_encrypt(plaintext, key):
+    cipher = AES.new(key, AES.MODE_ECB)
+    return cipher.encrypt(pkcs7_pad(plaintext))
 
+def ecb_decrypt(ciphertext, key):
+    cipher = AES.new(key, AES.MODE_ECB)
+    return pkcs7_unpad(cipher.decrypt(ciphertext))
+
+def cbc_encrypt(plaintext, key, iv):
+    cipher = AES.new(key, AES.MODE_CBC, iv)
+    return cipher.encrypt(pkcs7_pad(plaintext))
+
+def cbc_decrypt(ciphertext, key, iv):
+    cipher = AES.new(key, AES.MODE_CBC, iv)
+    return pkcs7_unpad(cipher.decrypt(ciphertext))
+
+def ctr_encrypt(plaintext, key, nonce):
+    cipher = AES.new(key, AES.MODE_CTR, nonce=nonce)
+    return cipher.encrypt(plaintext)
+
+def ctr_decrypt(ciphertext, key, nonce):
+    cipher = AES.new(key, AES.MODE_CTR, nonce=nonce)
+    return cipher.decrypt(ciphertext)
+
+# 6) CIFRADO DE MENSAJES POSTERIORES: TÉCNICA
+def technique_encrypt(plaintext, subkeys, technique):
     if technique == "none":
-        # AES_k1(plaintext)
         return ecb_encrypt(plaintext, subkeys["k1"])
     elif technique == "double":
-        # AES_k2(AES_k1(plaintext))
         tmp = ecb_encrypt(plaintext, subkeys["k1"])
         return ecb_encrypt(tmp, subkeys["k2"])
     elif technique == "triple":
-        # AES_k3(AES_k2(AES_k1(plaintext)))
         tmp1 = ecb_encrypt(plaintext, subkeys["k1"])
         tmp2 = ecb_encrypt(tmp1, subkeys["k2"])
         return ecb_encrypt(tmp2, subkeys["k3"])
     elif technique == "whitening":
-        # Ejemplo: ciphertext = [AES_k2( (plaintext XOR w1) )] XOR w3
         block = xor_bytes(plaintext, subkeys["w1"])
-        enc_block = ecb_encrypt(block, subkeys["k2"])  # -> ciphertext padded
+        enc_block = ecb_encrypt(block, subkeys["k2"])
         return xor_bytes(enc_block, subkeys["w3"])
     else:
         raise ValueError("Técnica desconocida")
 
 def technique_decrypt(ciphertext, subkeys, technique):
-    def ecb_decrypt(data, key):
-        cipher = AES.new(key, AES.MODE_ECB)
-        dec = cipher.decrypt(data)
-        return pkcs7_unpad(dec)
-
     if technique == "none":
         return ecb_decrypt(ciphertext, subkeys["k1"])
     elif technique == "double":
@@ -154,10 +148,7 @@ def technique_decrypt(ciphertext, subkeys, technique):
         tmp2 = ecb_decrypt(tmp1, subkeys["k2"])
         return ecb_decrypt(tmp2, subkeys["k1"])
     elif technique == "whitening":
-        # Inversa de ciphertext = XOR(AES_k2(plaintext XOR w1), w3)
         block_enc = xor_bytes(ciphertext, subkeys["w3"])
-        # block_enc es AES_k2(plaintext XOR w1) (padded)
-        # -> descifrar y unpad, XOR con w1
         cipher = AES.new(subkeys["k2"], AES.MODE_ECB)
         dec_padded = cipher.decrypt(block_enc)
         dec_block = pkcs7_unpad(dec_padded)
@@ -165,17 +156,14 @@ def technique_decrypt(ciphertext, subkeys, technique):
     else:
         raise ValueError("Técnica desconocida")
 
+# 7) CIFRADO DE MENSAJES POSTERIORES: MODO
 def mode_encrypt(plaintext, mode, subkeys, technique):
-    """
-    Aplica la técnica y luego la envuelve en MODO (ECB, CBC, CTR) con subkeys["k1"].
-    Para CBC y CTR, generamos IV/nonce y lo anteponemos al ciphertext.
-    """
-    # Aplica la técnica "none/double/triple/whitening"
+    #  Aplica la técnica y luego la envuelve en MODO (ECB, CBC, CTR) con subkeys["k1"]
     tech_out = technique_encrypt(plaintext, subkeys, technique)
 
     if mode == "ECB":
-        # Simplemente devolvemos tech_out (ya está "ECB" en la técnica)
         return tech_out
+    # Para CBC y CTR, generamos IV/nonce y lo anteponemos al ciphertext.
     elif mode == "CBC":
         iv = os.urandom(16)
         cipher = AES.new(subkeys["k1"], AES.MODE_CBC, iv)
@@ -191,7 +179,6 @@ def mode_encrypt(plaintext, mode, subkeys, technique):
 
 def mode_decrypt(ciphertext, mode, subkeys, technique):
     if mode == "ECB":
-        # Directa
         return technique_decrypt(ciphertext, subkeys, technique)
     elif mode == "CBC":
         iv = ciphertext[:16]
@@ -209,9 +196,7 @@ def mode_decrypt(ciphertext, mode, subkeys, technique):
     else:
         raise ValueError("Modo no soportado")
 
-###############################################################################
 # SERVIDOR
-###############################################################################
 def main():
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_socket.bind((HOST, PORT))

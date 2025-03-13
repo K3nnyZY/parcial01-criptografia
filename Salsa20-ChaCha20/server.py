@@ -6,7 +6,7 @@ HOST = '127.0.0.1'
 PORT = 5000
 
 def recv_exact(sock, num_bytes):
-    """ Lee exactamente num_bytes del socket. """
+    # Asegura que se reciban exactamente num_bytes del socket.
     data = b''
     while len(data) < num_bytes:
         chunk = sock.recv(num_bytes - len(data))
@@ -16,11 +16,7 @@ def recv_exact(sock, num_bytes):
     return data
 
 def recv_message(sock):
-    """
-    Primero recibe 4 bytes que indican la longitud,
-    luego lee exactamente esa cantidad de bytes.
-    Retorna el contenido leido.
-    """
+   #Recibe un mensaje del socket, Primero lee 4 bytes para determinar la longitud del mensaje.
     length_data = recv_exact(sock, 4)
     if not length_data:
         return None
@@ -30,10 +26,7 @@ def recv_message(sock):
     return recv_exact(sock, msg_len)
 
 def send_message(sock, data):
-    """
-    Envía primero 4 bytes con la longitud del mensaje,
-    seguido del contenido data.
-    """
+    # Enviar un mensaje al socket, Primeros 4 bytes indican la longitud del mensaje
     msg_len = len(data)
     sock.sendall(msg_len.to_bytes(4, 'big'))
     sock.sendall(data)
@@ -85,6 +78,9 @@ def main():
 
             # El primer tramo del mensaje es el nonce
             nonce_client = encrypted_msg[:nonce_size]
+            print(f"Nonce recibido: {nonce_client.hex()}")
+
+            # El resto del mensaje es el ciphertext
             ciphertext_client = encrypted_msg[nonce_size:]
 
             # Descifrar el texto recibido
