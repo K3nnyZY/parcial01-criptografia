@@ -4,12 +4,16 @@ import os
 from Crypto.Cipher import AES
 
 
-# Se asume que el Cliente conoce la MAIN_KEY por un canal alterno.
-
-MAIN_KEY = b'\x01\x02\x03\x04\x05\x06\x07\x08' \
-           b'\x09\x0A\x0B\x0C\x0D\x0E\x0F\x10' \
-           b'\x11\x12\x13\x14\x15\x16\x17\x18' \
-           b'\x19\x1A\x1B\x1C\x1D\x1E\x1F\x20'
+# Load MAIN_KEY
+def load_main_key(file_path):
+    """Carga la MAIN_KEY desde un archivo binario."""
+    if not os.path.exists(file_path):
+        print(f"[CLIENTE] Archivo {file_path} no encontrado.")
+        return None
+    with open(file_path, "rb") as f:
+        main_key = f.read()
+    print("[CLIENTE] MAIN_KEY cargada:", main_key.hex())
+    return main_key
 
 HOST = '127.0.0.1'
 PORT = 6000
@@ -174,14 +178,24 @@ def mode_decrypt(ciphertext, mode, subkeys, technique):
 
 # CLIENTE
 def main():
-    if len(sys.argv) < 3:
-        print("Uso: python client.py <MODE> <TECHNIQUE>")
+    if len(sys.argv) < 4:
+        print("Uso: python client.py <MODE> <TECHNIQUE> <KEY_FILE>")
         print("  <MODE>: ECB, CBC, CTR")
         print("  <TECHNIQUE>: none, double, triple, whitening")
+        print("  <KEY_FILE>: Ruta del archivo que contiene la MAIN_KEY")
         return
 
     mode = sys.argv[1]
     technique = sys.argv[2]
+    key_file = sys.argv[3]  # Ruta del archivo de la clave
+
+    # Cargar MAIN_KEY desde el archivo
+    MAIN_KEY = load_main_key(key_file)
+    if not MAIN_KEY:
+        print("[CLIENTE] Error: No se pudo cargar la MAIN_KEY.")
+        return
+
+    print(f"[CLIENTE] Modo: {mode}, Técnica: {technique}, MAIN_KEY cargada correctamente.")
 
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     client_socket.connect((HOST, PORT))

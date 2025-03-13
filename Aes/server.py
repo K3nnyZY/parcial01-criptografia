@@ -4,12 +4,19 @@ from Crypto.Cipher import AES
 
 
 # 1) LLAVE PRINCIPAL DE 256 BITS (AES-256)
-#    Se asume compartida con el Cliente por un canal alterno (USB, email, etc.)
+KEY_FILE_PATH = "main_key.bin"
 
-MAIN_KEY = b'\x01\x02\x03\x04\x05\x06\x07\x08' \
-           b'\x09\x0A\x0B\x0C\x0D\x0E\x0F\x10' \
-           b'\x11\x12\x13\x14\x15\x16\x17\x18' \
-           b'\x19\x1A\x1B\x1C\x1D\x1E\x1F\x20'  # 32 bytes, 256 bits
+def generate_main_key():
+    """Genera una nueva MAIN_KEY de 32 bytes aleatorios y la guarda en un archivo."""
+    main_key = os.urandom(32)  # Genera una nueva clave aleatoria de 256 bits
+    with open(KEY_FILE_PATH, "wb") as f:
+        f.write(main_key)
+    print(f"[SERVIDOR] MAIN_KEY generada y guardada en {KEY_FILE_PATH}")
+    return main_key
+
+def get_key_file_path():
+    """Devuelve la ruta absoluta del archivo de la MAIN_KEY."""
+    return os.path.abspath(KEY_FILE_PATH)
 
 HOST = '127.0.0.1'
 PORT = 6000
@@ -198,6 +205,8 @@ def mode_decrypt(ciphertext, mode, subkeys, technique):
 
 # SERVIDOR
 def main():
+    MAIN_KEY = generate_main_key()
+
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_socket.bind((HOST, PORT))
     server_socket.listen(1)
